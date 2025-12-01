@@ -1,4 +1,4 @@
-import ahocorasick
+import ahocorasick as pyahocorasick
 import re
 
 
@@ -12,9 +12,13 @@ class MatchInfo:
 
     def get_match_addr(self, parent_addr, first_adcode=None):
         if parent_addr:
-            return next(filter(lambda attr: attr.belong_to(parent_addr), self.attr_infos), None)
+            return next(
+                filter(lambda attr: attr.belong_to(parent_addr), self.attr_infos), None
+            )
         elif first_adcode:
-            res = next(filter(lambda attr: attr.adcode == first_adcode, self.attr_infos), None)
+            res = next(
+                filter(lambda attr: attr.adcode == first_adcode, self.attr_infos), None
+            )
             return res if res else self.attr_infos[0]
         else:
             return self.attr_infos[0]
@@ -26,7 +30,9 @@ class MatchInfo:
         return self.attr_infos[0]
 
     def __repr__(self) -> str:
-        return "from {} to {} value {}".format(self.start_index, self.end_index, self.origin_value)
+        return "from {} to {} value {}".format(
+            self.start_index, self.end_index, self.origin_value
+        )
 
 
 class Matcher:
@@ -37,15 +43,17 @@ class Matcher:
         "广西壮族自治区": "广西",
         "西藏自治区": "西藏",
         "新疆维吾尔自治区": "新疆",
-        "宁夏回族自治区": "宁夏"
+        "宁夏回族自治区": "宁夏",
     }
 
     def __init__(self, stop_re):
-        self.ac = ahocorasick.Automaton()
+        self.ac = pyahocorasick.Automaton()
         self.stop_re = stop_re
 
     def _abbr_name(self, origin_name):
-        return Matcher.special_abbre.get(origin_name) or re.sub(self.stop_re, '', origin_name)
+        return Matcher.special_abbre.get(origin_name) or re.sub(
+            self.stop_re, "", origin_name
+        )
 
     def _first_add_addr(self, addr_info):
         abbr_name = self._abbr_name(addr_info.name)
@@ -77,7 +85,9 @@ class Matcher:
             if prev_end_index is not None and end_index <= prev_end_index:
                 continue
 
-            cur_match_info = MatchInfo(attr_infos, start_index, end_index, original_value)
+            cur_match_info = MatchInfo(
+                attr_infos, start_index, end_index, original_value
+            )
             # 如果遇到的是全称, 会匹配到两次, 简称一次, 全称一次,所以要处理下
             if prev_match_info is not None:
                 if start_index == prev_start_index:
@@ -93,5 +103,3 @@ class Matcher:
 
         if prev_match_info is not None:
             yield prev_match_info
-
-

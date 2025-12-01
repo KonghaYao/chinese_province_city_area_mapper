@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # __init__.py
 
+from typing import Generator
 
 from .structures import AddrMap, Pca
 from .structures import P, C, A
@@ -24,11 +25,7 @@ _ADDR = "地址"
 
 _ADCODE = "adcode"
 
-_POS_KEY = {
-    _PROVINCE: _PROVINCE_POS,
-    _CITY: _CITY_POS,
-    _COUNTY: _COUNTY_POS
-}
+_POS_KEY = {_PROVINCE: _PROVINCE_POS, _CITY: _CITY_POS, _COUNTY: _COUNTY_POS}
 
 rank2name = [_PROVINCE, _CITY, _COUNTY]
 rank2pos_key = [_PROVINCE_POS, _CITY_POS, _COUNTY_POS]
@@ -57,26 +54,29 @@ class AddrInfo:
 
     def belong_to(self, other):
         """通过 adcode 判断当前 addr 是否属于 other"""
-        return self.adcode.startswith(other.adcode[:(other.rank+1) * 2])
+        return self.adcode.startswith(other.adcode[: (other.rank + 1) * 2])
 
 
 # 停用词包括: 省, 市, 特别行政区, 自治区.
 # 之所以 区 和 县 不作为停用词，是因为 区县 数目太多, 去掉 "区" 字 或者 "县" 字后很容易误配
-def _init_data(stop_key="([省市]|特别行政区|自治区)$") -> (dict, Matcher):
+def _init_data(stop_key="([省市]|特别行政区|自治区)$") -> tuple[dict, Matcher]:
     ad_map = {}
     matcher = Matcher(stop_key)
-    from pkg_resources import resource_stream
-    with resource_stream('cpca.resources', 'adcodes.csv') as csv_stream:
+    from importlib.resources import files
+
+    with files("cpca.resources").joinpath("adcodes.csv").open("rb") as csv_stream:
         from io import TextIOWrapper
         import csv
-        text = TextIOWrapper(csv_stream, encoding='utf8')
+
+        text = TextIOWrapper(csv_stream, encoding="utf8")
         adcodes_csv_reader = csv.DictReader(text)
         for record_dict in adcodes_csv_reader:
             addr_info = AddrInfo(
                 name=record_dict["name"],
                 adcode=record_dict["adcode"],
                 longitude=record_dict["longitude"],
-                latitude=record_dict["latitude"])
+                latitude=record_dict["latitude"],
+            )
             ad_map[record_dict["adcode"]] = addr_info
             matcher.add_addr_info(addr_info)
     matcher.complete_add()
@@ -89,56 +89,173 @@ ad_2_addr_dict, matcher = _init_data()
 
 def transform(location_strs, index=None, pos_sensitive=False, umap={}):
     """将地址描述字符串转换以"省","市","区"信息为列的DataFrame表格
-        Args:
-            locations:地址描述字符集合,可以是list, Series等任意可以进行for in循环的集合
-                      比如:["徐汇区虹漕路461号58号楼5楼", "泉州市洛江区万安塘西工业区"]
-            index:可以通过这个参数指定输出的DataFrame的index,默认情况下是range(len(data))
-            pos_sensitive:如果为True则会多返回三列，分别提取出的省市区在字符串中的位置，如果字符串中不存在的话则显示-1
-            umap: 当只有区的信息时， 且该区存在同名时， 指定该区具体是哪一个，字典的 key 为区名，value 为 adcode， 比如 {"朝阳区": "110105"}
-        Returns:
-            一个Pandas的DataFrame类型的表格，如下：
-               |省    |市   |区    |地址                 |adcode   |
-               |上海市|市辖区|徐汇区|虹漕路461号58号楼5楼   |310104 |
-               |福建省|泉州市|洛江区|万安塘西工业区        |350504 |
+    Args:
+        locations:地址描述字符集合,可以是list, Series等任意可以进行for in循环的集合
+                  比如:["徐汇区虹漕路461号58号楼5楼", "泉州市洛江区万安塘西工业区"]
+        index:可以通过这个参数指定输出的DataFrame的index,默认情况下是range(len(data))
+        pos_sensitive:如果为True则会多返回三列，分别提取出的省市区在字符串中的位置，如果字符串中不存在的话则显示-1
+        umap: 当只有区的信息时， 且该区存在同名时， 指定该区具体是哪一个，字典的 key 为区名，value 为 adcode， 比如 {"朝阳区": "110105"}
+    Returns:
+        一个polars的DataFrame类型的表格，如下：
+           |省    |市   |区    |地址                 |adcode   |
+           |上海市|市辖区|徐汇区|虹漕路461号58号楼5楼   |310104 |
+           |福建省|泉州市|洛江区|万安塘西工业区        |350504 |
     """
     from collections.abc import Iterable
 
     if not isinstance(location_strs, Iterable):
         from .exceptions import InputTypeNotSuportException
-        raise InputTypeNotSuportException(
-            'location_strs参数必须为可迭代的类型(比如list, Series等实现了__iter__方法的对象)')
 
-    import pandas as pd
-    result = pd.DataFrame(
-             [_get_one_addr(sentence, pos_sensitive, umap) for sentence in location_strs],
-             index=index)
+        raise InputTypeNotSuportException(
+            "location_strs参数必须为可迭代的类型(比如list, Series等实现了__iter__方法的对象)"
+        )
+
+    import polars as pl
+
+    result = pl.DataFrame(
+        [_get_one_addr(sentence, pos_sensitive, umap) for sentence in location_strs]
+    )
 
     return tidy_order(result, pos_sensitive)
 
 
-def transform_text_with_addrs(text_with_addrs, index=None, pos_sensitive=False, umap={}):
-    """将含有多个地址的长文本中的地址全部提取出来
-         Args:
-             text_with_addrs: 一个字符串，里面可能含有多个地址
-             index:可以通过这个参数指定输出的DataFrame的index,默认情况下是range(len(data))
-             pos_sensitive:如果为True则会多返回三列，分别提取出的省市区在字符串中的位置，如果字符串中不存在的话则显示-1
-             umap: 当只有区的信息时， 且该区存在同名时， 指定该区具体是哪一个，字典的 key 为区名，value 为 adcode， 比如 {"朝阳区": "110105"}
+def transform_polars_column(
+    df, column_name, pos_sensitive=False, umap={}, n_threads=None
+):
+    """高性能解析 polars DataFrame 中指定列的地址信息，支持多核心并行处理
+
+    Args:
+        df: polars DataFrame 对象
+        column_name: 包含地址字符串的列名
+        pos_sensitive: 如果为True则会多返回三列，分别提取出的省市区在字符串中的位置，如果字符串中不存在的话则显示-1
+        umap: 当只有区的信息时，且该区存在同名时，指定该区具体是哪一个，字典的 key 为区名，value 为 adcode，比如 {"朝阳区": "110105"}
+        n_threads: 并行处理的线程数，默认为 None（让 polars 自动决定）
+
+    Returns:
+        一个新的 polars DataFrame，包含原数据和解析后的地址信息列
+
+    Examples:
+        >>> import polars as pl
+        >>> df = pl.DataFrame({"address": ["上海市徐汇区", "北京市朝阳区"]})
+        >>> result = transform_polars_column(df, "address")
+        >>> print(result)
     """
-    import pandas as pd
-    result = pd.DataFrame(filter(lambda record: record[_ADCODE] is not None,
-                                 _extract_addrs(text_with_addrs, pos_sensitive, umap, truncate_pos=False,
-                                         new_entry_when_not_belong=True)),
-                          index=index)
+    import polars as pl
+
+    # 检查输入参数
+    if not isinstance(df, pl.DataFrame):
+        from .exceptions import InputTypeNotSuportException
+
+        raise InputTypeNotSuportException("df 参数必须是 polars DataFrame 类型")
+
+    if column_name not in df.columns:
+        raise ValueError(f"列 '{column_name}' 不存在于 DataFrame 中")
+
+    # 创建解析函数的包装器，用于传递参数
+    def parse_address(addr_str):
+        if addr_str is None:
+            return empty_record(pos_sensitive)
+        return _get_one_addr(str(addr_str), pos_sensitive, umap)
+
+    # 使用 map_elements 进行并行处理
+    # 在较新版本的 polars 中，默认启用并行处理
+    parsed_results = df[column_name].map_elements(
+        parse_address,
+        return_dtype=pl.Struct(
+            {
+                _PROVINCE: pl.Utf8,
+                _CITY: pl.Utf8,
+                _COUNTY: pl.Utf8,
+                _ADDR: pl.Utf8,
+                _ADCODE: pl.Utf8,
+                **({k: pl.Int64 for k in rank2pos_key} if pos_sensitive else {}),
+            }
+        ),
+    )
+
+    # 将解析结果展开为单独的列
+    result_df = df.with_columns(
+        parsed_results.struct.field(_PROVINCE).alias(_PROVINCE),
+        parsed_results.struct.field(_CITY).alias(_CITY),
+        parsed_results.struct.field(_COUNTY).alias(_COUNTY),
+        parsed_results.struct.field(_ADDR).alias(_ADDR),
+        parsed_results.struct.field(_ADCODE).alias(_ADCODE),
+    )
+
+    # 如果需要位置信息，添加位置列
+    if pos_sensitive:
+        result_df = result_df.with_columns(
+            parsed_results.struct.field(_PROVINCE_POS).alias(_PROVINCE_POS),
+            parsed_results.struct.field(_CITY_POS).alias(_CITY_POS),
+            parsed_results.struct.field(_COUNTY_POS).alias(_COUNTY_POS),
+        )
+
+    # 重新排列列的顺序，使地址解析结果列在前，原数据列在后
+    if pos_sensitive:
+        new_columns = [
+            _PROVINCE,
+            _CITY,
+            _COUNTY,
+            _ADDR,
+            _ADCODE,
+            _PROVINCE_POS,
+            _CITY_POS,
+            _COUNTY_POS,
+        ] + [col for col in df.columns if col != column_name]
+    else:
+        new_columns = [_PROVINCE, _CITY, _COUNTY, _ADDR, _ADCODE] + [
+            col for col in df.columns if col != column_name
+        ]
+
+    return result_df.select(new_columns)
+
+
+def transform_text_with_addrs(
+    text_with_addrs, index=None, pos_sensitive=False, umap={}
+):
+    """将含有多个地址的长文本中的地址全部提取出来
+    Args:
+        text_with_addrs: 一个字符串，里面可能含有多个地址
+        index:可以通过这个参数指定输出的DataFrame的index,默认情况下是range(len(data))
+        pos_sensitive:如果为True则会多返回三列，分别提取出的省市区在字符串中的位置，如果字符串中不存在的话则显示-1
+        umap: 当只有区的信息时， 且该区存在同名时， 指定该区具体是哪一个，字典的 key 为区名，value 为 adcode， 比如 {"朝阳区": "110105"}
+    """
+    import polars as pl
+
+    result = pl.DataFrame(
+        list(
+            filter(
+                lambda record: record[_ADCODE] is not None,
+                _extract_addrs(
+                    text_with_addrs,
+                    pos_sensitive,
+                    umap,
+                    truncate_pos=False,
+                    new_entry_when_not_belong=True,
+                ),
+            )
+        )
+    )
     return tidy_order(result, pos_sensitive)
 
 
 def tidy_order(df, pos_sensitive):
     """整理顺序,唯一作用是让列的顺序好看一些"""
     if pos_sensitive:
-        return df.loc[:, (_PROVINCE, _CITY, _COUNTY, _ADDR, _ADCODE, _PROVINCE_POS, _CITY_POS,
-                              _COUNTY_POS)]
+        return df.select(
+            [
+                _PROVINCE,
+                _CITY,
+                _COUNTY,
+                _ADDR,
+                _ADCODE,
+                _PROVINCE_POS,
+                _CITY_POS,
+                _COUNTY_POS,
+            ]
+        )
     else:
-        return df.loc[:, (_PROVINCE, _CITY, _COUNTY, _ADDR, _ADCODE)]
+        return df.select([_PROVINCE, _CITY, _COUNTY, _ADDR, _ADCODE])
 
 
 class MatchInfo:
@@ -162,7 +279,9 @@ def pos_setter(pos_sensitive):
     def set_pos(res, rank, pos):
         res[rank2pos_key[rank]] = pos
 
-    def empty(res, rank, pos): pass
+    def empty(res, rank, pos):
+        pass
+
     return set_pos if pos_sensitive else empty
 
 
@@ -170,10 +289,12 @@ def _get_one_addr(sentence, pos_sensitive, umap):
     return next(_extract_addrs(sentence, pos_sensitive, umap))
 
 
-def _extract_addrs(sentence, pos_sensitive, umap, truncate_pos=True, new_entry_when_not_belong=False) -> dict:
+def _extract_addrs(
+    sentence, pos_sensitive, umap, truncate_pos=True, new_entry_when_not_belong=False
+) -> "Generator[dict, None, None]":
     """提取出 sentence 中的所有地址"""
     # 空记录
-    if not isinstance(sentence, str) or sentence == '' or sentence is None:
+    if not isinstance(sentence, str) or sentence == "" or sentence is None:
         yield empty_record(pos_sensitive)
         return
 
@@ -196,7 +317,7 @@ def _extract_addrs(sentence, pos_sensitive, umap, truncate_pos=True, new_entry_w
             # 匹配到了县级就停止
             if cur_addr.rank == AddrInfo.RANK_COUNTY:
                 update_res_by_adcode(res, adcode)
-                res[_ADDR] = sentence[truncate_index + 1:] if truncate_pos else ""
+                res[_ADDR] = sentence[truncate_index + 1 :] if truncate_pos else ""
                 res[_ADCODE] = adcode
                 yield res
                 res = empty_record(pos_sensitive)
@@ -206,7 +327,7 @@ def _extract_addrs(sentence, pos_sensitive, umap, truncate_pos=True, new_entry_w
         elif new_entry_when_not_belong:
             # 当找不到可以匹配的地址时,新建新的数据项
             update_res_by_adcode(res, adcode)
-            res[_ADDR] = sentence[truncate_index + 1:] if truncate_pos else ""
+            res[_ADDR] = sentence[truncate_index + 1 :] if truncate_pos else ""
             res[_ADCODE] = adcode
             yield res
             addr = match_info.get_match_addr(None, first_adcode)
@@ -221,13 +342,13 @@ def _extract_addrs(sentence, pos_sensitive, umap, truncate_pos=True, new_entry_w
         return
 
     update_res_by_adcode(res, adcode)
-    res[_ADDR] = sentence[truncate_index + 1:] if truncate_pos else ""
+    res[_ADDR] = sentence[truncate_index + 1 :] if truncate_pos else ""
     res[_ADCODE] = adcode
     yield res
 
 
 def _fill_adcode(adcode):
-    return '{:0<12s}'.format(adcode)
+    return "{:0<12s}".format(adcode)
 
 
 def adcode_name(part_adcode: str):
