@@ -16,3 +16,4 @@ df_echarts_cate.html
 venv
 target
 .venv
+.DS_Store
